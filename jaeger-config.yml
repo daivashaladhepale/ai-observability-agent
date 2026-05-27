@@ -1,0 +1,27 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 1024
+    timeout: 10s
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: badger
+
+extensions:
+  badger:
+    directory_value: ./badger/data
+    directory_key: ./badger/key
+
+service:
+  extensions: [badger]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
