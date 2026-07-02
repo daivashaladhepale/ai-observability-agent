@@ -2,7 +2,7 @@ import { useState } from 'react';
 
 export default function ChatPanel() {
   const [messages, setMessages] = useState([
-    { id: 1, text: 'Hey there! 👋 Ask me anything about AI, observability, or what\'s on your mind!', sender: 'agent', timestamp: new Date() }
+    { id: 1, text: 'Hey there! 👋 Ask me anything , or what\'s on your mind!', sender: 'agent', timestamp: new Date() }
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
