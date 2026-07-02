@@ -10,6 +10,12 @@ from typing import TypedDict, Literal, List
 from langgraph.graph import StateGraph, START, END
 import time
 import json
+import os
+import glob
+
+from chromadb import Client
+from chromadb.config import Settings
+from chromadb.utils import embedding_functions
 
 from telemetry import tracer
 from metrics import REQUEST_COUNT, LATENCY
@@ -96,12 +102,94 @@ class AgentState(TypedDict):
 
 # ============ TOOL DEFINITIONS ============
 
+CHROMA_DB_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")
+KB_COLLECTION_NAME = "agentic-kb"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+
+def _load_local_documents() -> dict[str, str]:
+    """Load text documents from knowledge_base or repo documentation."""
+    docs: dict[str, str] = {}
+    knowledge_dir = os.path.join(os.path.dirname(__file__), "knowledge_base")
+
+    if os.path.isdir(knowledge_dir):
+        patterns = ["**/*.txt", "**/*.md", "**/*.csv"]
+        for pattern in patterns:
+            for path in sorted(glob.glob(os.path.join(knowledge_dir, pattern), recursive=True)):
+                if os.path.basename(path).lower() == "readme.txt":
+                    continue
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        text = f.read().strip()
+                    if text:
+                        docs[path] = text
+                except OSError:
+                    continue
+
+    for doc_path in ["README.md", "AGENTIC_ARCHITECTURE.md"]:
+        full_path = os.path.join(os.path.dirname(__file__), doc_path)
+        if os.path.exists(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                docs[full_path] = f.read().strip()
+
+    return docs
+
+
+def _get_chroma_client() -> Client:
+    return Client(Settings(persist_directory=CHROMA_DB_DIR, is_persistent=True))
+
+
+def _initialize_knowledge_base(force_rebuild: bool = False):
+    client = _get_chroma_client()
+    embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBEDDING_MODEL)
+    collection = client.get_or_create_collection(name=KB_COLLECTION_NAME, embedding_function=embedding_fn)
+
+    if force_rebuild or collection.count() == 0:
+        documents = _load_local_documents()
+        if documents:
+            ids = list(documents.keys())
+            texts = list(documents.values())
+            metadatas = [{"source": os.path.basename(path)} for path in ids]
+            collection.add(documents=texts, ids=ids, metadatas=metadatas)
+
+    return collection
+
+
+_kb_collection = None
+
+def _get_kb_collection():
+    global _kb_collection
+    if _kb_collection is None:
+        _kb_collection = _initialize_knowledge_base()
+    return _kb_collection
+
+
 def search_knowledge_base(query: str) -> str:
-    """RAG Tool: Search internal knowledge base"""
+    """RAG Tool: Search the local Chroma knowledge base."""
     with tracer.start_as_current_span("tool-search-kb"):
-        # Simulate knowledge base search
-        results = f"KB results for '{query}': Relevant documents about {query[:20]}..."
-    return results
+        collection = _get_kb_collection()
+        results = collection.query(
+            query_texts=[query],
+            n_results=3,
+            include=["documents", "metadatas", "distances"]
+        )
+
+        hits = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+
+        if not hits:
+            return "No relevant knowledge base documents found for this query."
+
+        formatted_results = []
+        for idx, doc in enumerate(hits):
+            source = metadatas[idx].get("source", "unknown") if idx < len(metadatas) else "unknown"
+            score = distances[idx] if idx < len(distances) else 0.0
+            formatted_results.append(
+                f"Source: {source} (distance={score:.4f})\n{doc}"
+            )
+
+        return "\n\n".join(formatted_results)
 
 
 def gather_external_data(topic: str) -> str:
